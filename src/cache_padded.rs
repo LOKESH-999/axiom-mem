@@ -1,4 +1,4 @@
-///! This module is from the `crossbeam-utils` crate.
+//! This module is from the `crossbeam-utils` crate.
 use core::fmt;
 use core::ops::{Deref, DerefMut};
 
@@ -35,7 +35,7 @@ use core::ops::{Deref, DerefMut};
 /// Alignment and padding:
 ///
 /// ```
-/// use lock_free_mpsc::cache_padded::CachePadded;
+/// use axiom_mem::cache_padded::CachePadded;
 ///
 /// let array = [CachePadded::new(1i8), CachePadded::new(2i8)];
 /// let addr1 = &*array[0] as *const i8 as usize;
@@ -51,7 +51,7 @@ use core::ops::{Deref, DerefMut};
 /// each other's cache lines:
 ///
 /// ```
-/// use lock_free_mpsc::cache_padded::CachePadded;
+/// use axiom_mem::cache_padded::CachePadded;
 /// use std::sync::atomic::AtomicUsize;
 ///
 /// struct Queue<T> {
@@ -159,7 +159,7 @@ impl<T> CachePadded<T> {
     /// # Examples
     ///
     /// ```
-    /// use lock_free_mpsc::cache_padded::CachePadded;
+    /// use axiom_mem::cache_padded::CachePadded;
     ///
     /// let padded_value = CachePadded::new(1);
     /// ```
@@ -172,7 +172,7 @@ impl<T> CachePadded<T> {
     /// # Examples
     ///
     /// ```
-    /// use lock_free_mpsc::cache_padded::CachePadded;
+    /// use axiom_mem::cache_padded::CachePadded;
     /// let padded_value = CachePadded::new(7);
     /// let value = padded_value.into_inner();
     /// assert_eq!(value, 7);

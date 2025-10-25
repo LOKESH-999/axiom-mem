@@ -1,6 +1,14 @@
 [package]
-name = "buff_pool"
+name = "axiom_mem"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+
+[profile.bench]
+overflow-checks = false
+[profile.dev]
+overflow-checks = false
+[profile.release]
+overflow-checks = false
+[profile.test]
+overflow-checks = false
