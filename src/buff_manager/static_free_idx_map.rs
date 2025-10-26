@@ -184,6 +184,7 @@ impl FreeIdxManager {
 
 unsafe impl Send for FreeIdxManager {}
 unsafe impl Sync for FreeIdxManager {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

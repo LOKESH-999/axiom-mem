@@ -7,8 +7,8 @@
 //! - Allocating typed objects from an object pool
 //! - Automatic reclamation of slots via RAII handles
 //!
-//! Safety: Many operations in this crate are unsafe for performance reasons. 
-//! Unsafe functions (like `read_unchecked` / `write_unchecked`) must only be used correctly, 
+//! Safety: Many operations in this crate are unsafe for performance reasons.
+//! Unsafe functions (like `read_unchecked` / `write_unchecked`) must only be used correctly,
 //! i.e., initialized slots and valid indices.
 
 fn main() {
@@ -22,7 +22,9 @@ fn main() {
 
         if let Some(block) = pool.pop_free() {
             // write into the block (unsafe API)
-            unsafe { block.write_unchecked(0, 42); }
+            unsafe {
+                block.write_unchecked(0, 42);
+            }
 
             // read back the value
             let val = unsafe { block.read_unchecked(0) };

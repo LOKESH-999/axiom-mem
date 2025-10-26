@@ -5,3 +5,4 @@
 5] Adding more and proper test-cases for static-array-buffer & static-object-buffer.
 6] double drop-indication and prevention.
 7] support for custom allocator.
+8] replace method index[] by ptr.add(count)
