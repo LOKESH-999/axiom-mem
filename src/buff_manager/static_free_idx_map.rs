@@ -142,7 +142,7 @@ impl FreeIdxManager {
     /// - The same `idx` is not released twice without a reallocation.
     ///   Violating either may corrupt the bitmap state or freelist tracking.
     pub const unsafe fn retire(&mut self, id: u32) {
-        let idx = id ;
+        let idx = id;
         // dividing it by 64 inorder to find map-index.
         let map_idx = idx >> Self::DIV_BY;
         // if `self.bitmap[map_idx as usize] == 0` then we need to add a marking in `free_list`.
@@ -156,8 +156,34 @@ impl FreeIdxManager {
         // if `self.bitmap[map_idx as usize] == 0` then the above will be valid by we increment `curr_idx` else it acts as dead buff
         self.curr_idx += is_to_add as u16;
     }
+
+    /// checks if a specific slot index is free in the bitmap.
+    ///
+    /// # Safety
+    /// - The caller **must ensure** that `idx` is within the valid range of the bitmap.
+    ///   Passing an out-of-bounds index will result in undefined behavior.
+    ///
+    /// # Parameters
+    /// - `idx`: The slot index to check.
+    ///
+    /// # Returns
+    /// - `true` if the slot at `idx` is free.
+    /// - `false` if the slot is occupied.
+    ///
+    /// # Details
+    /// The bitmap (`u64` array) tracks free slots:
+    /// - Computes `map_idx` by dividing `idx` by 64 (`idx >> DIV_BY`) to locate the `u64` block.
+    /// - Computes a `mask` to isolate the corresponding bit.
+    /// - Checks if the bit is set (free).
+    pub const unsafe fn is_free(&self, idx: u32) -> bool {
+        let map_idx = idx >> Self::DIV_BY;
+        let mask = 1u64 << (Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64));
+        self.bitmap[map_idx as usize] & mask == mask
+    }
 }
 
+unsafe impl Send for FreeIdxManager {}
+unsafe impl Sync for FreeIdxManager {}
 #[cfg(test)]
 mod tests {
     use super::*;

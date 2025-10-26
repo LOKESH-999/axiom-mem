@@ -120,6 +120,48 @@ impl<'o, T> Object<'o, T> {
             _marker: PhantomData,
         }
     }
+
+    /// Consumes the [`Object`] and returns a raw pointer to the value.
+    ///
+    /// # Safety
+    /// - The caller must guarantee that this pointer is **used and dropped**
+    ///   within the lifetime of the [`ObjectPoolManager`] that owns it.
+    /// - The pool will not automatically reclaim or drop the value when this pointer
+    ///   is no longer used; the user must call respective [`ObjectPoolManager::retire_by_ptr()`]
+    ///   manually when done.
+    ///
+    /// # Example
+    /// ```
+    /// use axiom_mem::buff_manager::ObjectPoolManager;
+    /// let pool = ObjectPoolManager::new(8);
+    /// let obj = pool.pop_free(42).unwrap();
+    /// let raw = unsafe { obj.into_raw_ptr() };
+    ///
+    /// // use raw pointer ...
+    /// unsafe { pool.retire_by_ptr(raw); }
+    /// ```
+    pub const unsafe fn into_raw_ptr(self) -> NonNull<T> {
+        let ptr = self.ptr.cast();
+        mem::forget(self);
+        ptr
+    }
+
+    /// Reconstructs an `Object` from a raw pointer and its owning pool.
+    ///
+    /// # Safety
+    /// - `ptr` must point to a valid object currently allocated in `pool_ref`.
+    /// - The returned `Object` assumes ownership of this slot and will release it
+    ///   when dropped.
+    #[inline(always)]
+    pub unsafe fn from_raw_parts(ptr: NonNull<T>, pool_ref: &'o ObjectPoolManager<T>) -> Self {
+        let id = unsafe { pool_ref.get_idx_by_ptr_unchecked(ptr) };
+        Self {
+            id,
+            pool_ref,
+            ptr: ptr.cast(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T> Deref for Object<'_, T> {
@@ -222,6 +264,138 @@ impl<T> ObjectPoolManager<T> {
     /// - Double retire or invalid ID is *undefined behavior*.
     const unsafe fn retire(&self, id: u32) {
         unsafe { (&mut *self.free_idx_map.get()).retire(id) }
+    }
+
+    /// Computes the index of a pointer within the pool without bounds checking.
+    ///
+    /// # Safety
+    /// - The pointer must have been obtained via [`Object::into_raw_ptr`] which releated to this pool.
+    /// - The pointer `ptr` must point to an initialized object inside this pool.
+    /// - It must have been originally allocated via this pool.
+    /// - The caller must ensure `ptr >= base_ptr` and within bounds.
+    ///
+    /// # Debug Mode
+    /// - In debug builds, asserts that the pointer lies after `base_ptr`.
+    ///
+    /// # Example
+    /// ```
+    /// use axiom_mem::buff_manager::ObjectPoolManager;
+    /// let pool = ObjectPoolManager::new(4);
+    /// let obj = pool.pop_free(10).unwrap();
+    /// let raw = unsafe { obj.into_raw_ptr() };
+    /// let idx = unsafe { pool.get_idx_by_ptr_unchecked(raw) };
+    /// assert_eq!(idx, 3);
+    /// unsafe { pool.retire_by_ptr(raw); }
+    /// ```
+    #[inline(always)]
+    pub unsafe fn get_idx_by_ptr_unchecked(&self, ptr: NonNull<T>) -> u32 {
+        // Checking `ptr` > `self.base_ptr`
+        debug_assert!(ptr.as_ptr().cast() >= self.base_ptr.as_ptr());
+        // Getting the Index from ptr
+        unsafe { ptr.cast().offset_from(self.base_ptr) as u32 }
+    }
+
+    /// Drops the object pointed to by `ptr` and releases its slot back to the pool,
+    /// without performing bounds checks.
+    ///
+    /// # Safety
+    /// - The pointer must have been obtained via [`Object::into_raw_ptr`] which releated to this pool.
+    /// - The pointer must belong to this pool and point to a valid initialized object.
+    /// - The caller must ensure no double-retire or aliasing access occurs.
+    /// - Using an out-of-pool pointer results in undefined behavior.
+    ///
+    /// # Debug Mode
+    /// - Performs range assertions to ensure pointer validity.
+    ///
+    /// # Example
+    /// ```
+    /// use axiom_mem::buff_manager::ObjectPoolManager;
+    /// let pool = ObjectPoolManager::new(2);
+    /// let obj = pool.pop_free(42).unwrap();
+    /// let raw = unsafe { obj.into_raw_ptr() };
+    /// unsafe { pool.retire_by_ptr_unchecked(raw); }
+    /// ```
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    pub unsafe fn retire_by_ptr_unchecked(&self, ptr: NonNull<T>) {
+        unsafe {
+            // Just checking weather the pointer in range or not
+            debug_assert!(ptr.as_ptr().cast() <= self.base_ptr.as_ptr().add(self.size as usize));
+            // Droping the value
+            (*ptr.cast::<MaybeUninit<T>>().as_ptr()).assume_init_drop();
+            // getting the drop idx
+            let idx = self.get_idx_by_ptr_unchecked(ptr);
+            // Marking the drop idx as free
+            self.retire(idx);
+        }
+    }
+
+    /// Drops and retires an object by pointer, with safety assertions.
+    ///
+    /// This version performs runtime bound checks to ensure `ptr` lies within the
+    /// allocated pool memory range.
+    ///
+    /// # Panics
+    /// Panics if `ptr` is outside the valid memory range of the pool.
+    ///
+    /// # Safety
+    /// The pointer must have been obtained via [`Object::into_raw_ptr`] which releated to this pool.
+    ///
+    /// # Example
+    /// ```
+    /// use axiom_mem::buff_manager::ObjectPoolManager;
+    /// let pool = ObjectPoolManager::new(4);
+    /// let obj = pool.pop_free(99).unwrap();
+    /// let raw = unsafe { obj.into_raw_ptr() };
+    /// unsafe { pool.retire_by_ptr(raw) };
+    /// ```
+    #[inline(always)]
+    pub unsafe fn retire_by_ptr(&self, ptr: NonNull<T>) {
+        assert!(self.base_ptr <= ptr.cast(), "`ptr` must be >= `base_ptr`");
+        unsafe {
+            assert!(
+                self.base_ptr.add(self.size as usize) >= ptr.cast(),
+                "`ptr` <= `peek_ptr"
+            );
+            self.retire_by_ptr_unchecked(ptr);
+        }
+    }
+
+    /// Checks if the slot with the given index is currently free in the pool.
+    ///
+    /// # Parameters
+    /// - `id`: The index of the slot to check.
+    ///
+    /// # Returns
+    /// - `true` if the slot is free and can be allocated.
+    /// - `false` if the slot is currently in use.
+    ///
+    /// # Safety
+    /// This function uses an `UnsafeCell` internally to access the free index map,
+    /// but it provides a safe interface for checking slot availability.
+    pub const fn is_free_idx(&self, id: u32) -> bool {
+        assert!(id <= self.size, "`Id` must be <= `self.size`");
+        unsafe { (*self.free_idx_map.get()).is_free(id) }
+    }
+
+    /// Checks if a given slot index is free in the pool without bounds checks.
+    ///
+    /// # Safety
+    /// - Caller must ensure that `id` is within the valid range of indices.
+    /// - Passing an out-of-bounds `id` can lead to undefined behavior.
+    ///
+    /// # Parameters
+    /// - `id`: The slot index to check.
+    ///
+    /// # Returns
+    /// - `true` if the slot is free.
+    /// - `false` if the slot is occupied.
+    ///
+    /// # Notes
+    /// - This delegates to the underlying `FreeIdxMap::is_free` method.
+    /// - No bounds or validity checks are performed.
+    pub const unsafe fn is_free_idx_unchecked(&self, id: u32) -> bool {
+        unsafe { (*self.free_idx_map.get()).is_free(id) }
     }
 }
 
@@ -572,5 +746,229 @@ mod tests {
         drop(reconstructed);
         let obj2 = pool.pop_free(99).unwrap();
         assert_eq!(obj2.id(), 0);
+    }
+
+    #[test]
+    fn test_into_raw_ptr_and_retire() {
+        let pool = ObjectPoolManager::new(2);
+        let obj = pool.pop_free("fucke_you".to_string()).unwrap();
+        let raw = unsafe { obj.into_raw_ptr() };
+        unsafe { pool.retire_by_ptr(raw) }; // must reclaim slot safely
+        // Reuse slot
+        let obj2 = pool.pop_free("fucke_you2".to_string()).unwrap();
+        assert_eq!(*obj2, "fucke_you2".to_string());
+    }
+
+    #[test]
+    fn test_get_idx_by_ptr_unchecked() {
+        let pool = ObjectPoolManager::new(3);
+        let obj = pool.pop_free("fucke_you".to_string()).unwrap();
+        let raw = unsafe { obj.into_raw_ptr() };
+        let idx = unsafe { pool.get_idx_by_ptr_unchecked(raw) };
+        assert_eq!(idx, 2);
+        unsafe { pool.retire_by_ptr(raw) };
+    }
+
+    #[test]
+    fn test_retire_by_ptr_unchecked() {
+        let pool = ObjectPoolManager::new(2);
+        let obj = pool.pop_free("fucke_you".to_string()).unwrap();
+        let raw = unsafe { obj.into_raw_ptr() };
+        unsafe { pool.retire_by_ptr_unchecked(raw) }; // drop and free
+        // Check that slot is reusable
+        let obj2 = pool.pop_free("fucke_you2".to_string()).unwrap();
+        assert_eq!(*obj2, "fucke_you2".to_string());
+    }
+
+    #[test]
+    fn test_retire_by_ptr_with_assertions() {
+        let pool = ObjectPoolManager::new(2);
+        let obj = pool.pop_free("fucke_you".to_string()).unwrap();
+        let raw = unsafe { obj.into_raw_ptr() };
+        unsafe { pool.retire_by_ptr(raw) }; // safe, asserts pointer in bounds
+        let obj2 = pool.pop_free("fucke_you2".to_string()).unwrap();
+        assert_eq!(*obj2, "fucke_you2".to_string());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_retire_by_ptr_out_of_bounds() {
+        let pool = ObjectPoolManager::<String>::new(2);
+        let bogus_ptr = NonNull::dangling(); // invalid pointer
+        unsafe { pool.retire_by_ptr(bogus_ptr) }; // must panic
+    }
+
+    #[test]
+    fn test_stack_like_pop_free_and_idx_verification() {
+        let pool = ObjectPoolManager::new(4);
+
+        // Allocate Boxes in stack-like manner: idx should go 3,2,1,0
+        let a = pool.pop_free(Box::new(10)).unwrap();
+        let b = pool.pop_free(Box::new(20)).unwrap();
+        let c = pool.pop_free(Box::new(30)).unwrap();
+        let d = pool.pop_free(Box::new(40)).unwrap();
+
+        assert!(pool.pop_free(Box::new(50)).is_err(), "Pool should be full");
+
+        // Verify get_idx_by_ptr_unchecked correctness
+        let ptr_a = unsafe { a.into_raw_ptr() };
+        let ptr_b = unsafe { b.into_raw_ptr() };
+        let ptr_c = unsafe { c.into_raw_ptr() };
+        let ptr_d = unsafe { d.into_raw_ptr() };
+
+        let idx_a = unsafe { pool.get_idx_by_ptr_unchecked(ptr_a) };
+        let idx_b = unsafe { pool.get_idx_by_ptr_unchecked(ptr_b) };
+        let idx_c = unsafe { pool.get_idx_by_ptr_unchecked(ptr_c) };
+        let idx_d = unsafe { pool.get_idx_by_ptr_unchecked(ptr_d) };
+
+        // Since stack-like allocation, highest index allocated first
+        assert_eq!(idx_a, 3);
+        assert_eq!(idx_b, 2);
+        assert_eq!(idx_c, 1);
+        assert_eq!(idx_d, 0);
+
+        // Check is_free_idx
+        assert!(!pool.is_free_idx(idx_a));
+        assert!(!pool.is_free_idx(idx_b));
+        assert!(!pool.is_free_idx(idx_c));
+        assert!(!pool.is_free_idx(idx_d));
+    }
+
+    #[test]
+    fn test_retire_by_ptr_unchecked_and_bounds() {
+        let pool = ObjectPoolManager::new(4);
+
+        let s1 = pool.pop_free(String::from("hello")).unwrap();
+        let s2 = pool.pop_free(String::from("world")).unwrap();
+
+        let p1 = unsafe { s1.into_raw_ptr() };
+        let p2 = unsafe { s2.into_raw_ptr() };
+
+        // Retire both using unchecked
+        unsafe { pool.retire_by_ptr_unchecked(p1) };
+        unsafe { pool.retire_by_ptr_unchecked(p2) };
+
+        // Ensure slots marked free
+        let idx1 = unsafe { pool.get_idx_by_ptr_unchecked(p1) };
+        let idx2 = unsafe { pool.get_idx_by_ptr_unchecked(p2) };
+        assert!(pool.is_free_idx(idx1));
+        assert!(pool.is_free_idx(idx2));
+    }
+
+    #[test]
+    fn test_retire_by_ptr_safe_assertions_and_edge() {
+        let pool = ObjectPoolManager::new(2);
+
+        let v1 = pool.pop_free(vec![1, 2, 3]).unwrap();
+        let v2 = pool.pop_free(vec![4, 5, 6]).unwrap();
+
+        let ptr1 = unsafe { v1.into_raw_ptr() };
+        let ptr2 = unsafe { v2.into_raw_ptr() };
+
+        // In-range pointers, should work
+        unsafe { pool.retire_by_ptr(ptr1) };
+        unsafe { pool.retire_by_ptr(ptr2) };
+
+        assert!(pool.is_free_idx(0));
+        assert!(pool.is_free_idx(1));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_retire_by_ptr_out_of_upper_bound_panics() {
+        let pool = ObjectPoolManager::new(2);
+        let bogus_ptr =
+            unsafe { NonNull::new_unchecked(pool.base_ptr.as_ptr().add(5).cast::<String>()) };
+        unsafe { pool.retire_by_ptr(bogus_ptr) };
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_retire_by_ptr_below_lower_bound_panics() {
+        let pool = ObjectPoolManager::new(2);
+        let bogus_ptr =
+            unsafe { NonNull::new_unchecked(pool.base_ptr.as_ptr().sub(1).cast::<String>()) };
+        unsafe { pool.retire_by_ptr(bogus_ptr) };
+    }
+
+    #[test]
+    fn test_multiple_alloc_retire_and_idx_consistency() {
+        let pool = ObjectPoolManager::new(3);
+
+        let o1 = pool.pop_free(Box::new(100)).unwrap();
+        let o2 = pool.pop_free(Box::new(200)).unwrap();
+        let o3 = pool.pop_free(Box::new(300)).unwrap();
+
+        let p1 = unsafe { o1.into_raw_ptr() };
+        let p2 = unsafe { o2.into_raw_ptr() };
+        let p3 = unsafe { o3.into_raw_ptr() };
+
+        // Retire middle first
+        unsafe { pool.retire_by_ptr(p2) };
+
+        let new_obj = pool.pop_free(Box::new(999)).unwrap();
+        let new_ptr = unsafe { new_obj.into_raw_ptr() };
+        let new_idx = unsafe { pool.get_idx_by_ptr_unchecked(new_ptr) };
+
+        // Should reuse index 1
+        assert_eq!(new_idx, 1);
+        assert!(!pool.is_free_idx(new_idx));
+
+        // Retire rest
+        unsafe { pool.retire_by_ptr(p1) };
+        unsafe { pool.retire_by_ptr(p3) };
+        unsafe { pool.retire_by_ptr(new_ptr) };
+
+        // All should now be free
+        assert!(pool.is_free_idx(0));
+        assert!(pool.is_free_idx(1));
+        assert!(pool.is_free_idx(2));
+    }
+
+    #[test]
+    fn test_string_vec_box_with_retire_by_ptr_unchecked() {
+        let pool = ObjectPoolManager::new(3);
+
+        let s = pool.pop_free(String::from("rust")).unwrap();
+        let b = pool
+            .pop_free("Box::new(vec![1, 2, 3])".to_string())
+            .unwrap();
+        let v = pool.pop_free("vec![10, 20, 30]".to_string()).unwrap();
+
+        let p_s = unsafe { s.into_raw_ptr() };
+        let p_b = unsafe { b.into_raw_ptr() };
+        let p_v = unsafe { v.into_raw_ptr() };
+
+        unsafe {
+            pool.retire_by_ptr_unchecked(p_s);
+            pool.retire_by_ptr_unchecked(p_b);
+            pool.retire_by_ptr_unchecked(p_v);
+        }
+
+        // Ensure they are free
+        assert!(pool.is_free_idx(0));
+        assert!(pool.is_free_idx(1));
+        assert!(pool.is_free_idx(2));
+
+        // Reallocate to make sure no UB
+        let new_s = pool.pop_free(String::from("safe")).unwrap();
+        assert_eq!(*new_s, "safe");
+    }
+
+    #[test]
+    fn test_from_raw_parts_reconstruct() {
+        let pool = ObjectPoolManager::new(2);
+        let obj = pool.pop_free(Box::new(7)).unwrap();
+
+        let raw = unsafe { obj.into_raw_ptr() };
+        let id = unsafe { ObjectPoolManager::get_idx_by_ptr_unchecked(&pool, raw) };
+        assert_eq!(id, 1);
+        let reconstructed = unsafe { Object::from_raw_parts(raw, &pool) };
+        assert_eq!(*reconstructed, Box::new(7));
+
+        // Dropping reconstructed frees slot
+        drop(reconstructed);
+        let obj2 = pool.pop_free(Box::new(99)).unwrap();
+        assert_eq!(obj2.id(), 1);
     }
 }

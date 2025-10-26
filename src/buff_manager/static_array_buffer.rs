@@ -39,7 +39,7 @@ use crate::buff_manager::static_free_idx_map::FreeIdxManager;
 /// # Safety
 /// This structure assumes the pointer is valid for reads/writes up to
 /// `block_size * n_blocks` bytes. No lifetime tracking or aliasing checks are enforced.
-struct RawBuffers<T> {
+pub struct RawBuffers<T> {
     /// Non-null pointer to the start of the buffer.
     buff: NonNull<MaybeUninit<T>>,
     /// Size of each block (in units of `T` or bytes, depending on context).
@@ -321,7 +321,7 @@ impl<T> Drop for Buff<'_, T> {
 /// The caller must ensure:
 /// - No aliasing mutable access to buffers or index maps occurs.
 /// - Released indices are not reused after `retire()` until reallocated.
-/// - `Buff<'_, T>` instances obtained from [`pop_free()`] do not outlive
+/// - `Buff<'_, T>` instances obtained from `pop_free` do not outlive
 ///   the manager or overlap with other active `Buff` instances.
 ///
 /// # Notes
@@ -372,7 +372,7 @@ impl<T> BufferPoolManager<T> {
     ///
     /// # Safety
     /// The returned `Buff` provides unique mutable access to a block.
-    /// It must be explicitly released using [`retire()`] when done.
+    /// It must be explicitly released using `retire` when done.
     pub const fn pop_free(&self) -> Option<Buff<'_, T>> {
         let (buff, idx_map) = self.get_mut();
         let free_idx = idx_map.get_free_idx();

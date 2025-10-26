@@ -7,6 +7,16 @@ A small, low-level Rust packages that implements fixed-capacity, single-threaded
 
 The crate is intended as a compact building block for systems that need deterministic, low-overhead allocation of many fixed-size slots without per-item heap allocations.
 
+## Overflow & Branchless Operations Warning
+
+**Warning:** This crate is designed for **high-performance memory management** using **branchless operations**.  
+- Roughly **80%–90% of the critical core operations** are branchless.  
+- Most arithmetic operations do **not perform overflow checks**.  
+- In practice, overflow occurs in about **60% of usage cases**.  
+- There is **no safe way for users to prevent overflow** without rewriting significant portions of the code.  
+
+> This crate effectively assumes that overflow checks are **disabled** to achieve maximum speed.
+
 ## Status
 Stable for single-threaded usage patterns and experimental for broader use. The crate intentionally uses unsafe primitives to attain low overhead and therefore requires careful use.
 

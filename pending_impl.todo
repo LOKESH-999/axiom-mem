@@ -1,7 +1,7 @@
 1] generic test-cases which can support MAP_WIDTH (128,256,512) for static_free_idx.
-2] increasing support for managing slots from 4M till 1B entries.
+2] increasing support for managing slots from 4M till 50M entries.
 3] implementing dyamic(grow as you need) memory management.
 4] No.of free maps tracking.
-5] Adding more test-cases for static-array-buffer.
+5] Adding more and proper test-cases for static-array-buffer & static-object-buffer.
 6] double drop-indication and prevention.
 7] support for custom allocator.
