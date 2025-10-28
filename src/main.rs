@@ -1,5 +1,3 @@
-#![feature(allocator_api)]
-
 //! # Example: Using Buffer and Object Pools
 //!
 //! This example demonstrates basic usage of the `axiom_mem` crate:

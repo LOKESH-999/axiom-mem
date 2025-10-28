@@ -2,7 +2,17 @@
 name = "axiom_mem"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/LOKESH-999/axiom-mem"
+documentation = "https://docs.rs/axiom-mem"
+authors = ["Lokesh <lokiapm888@gmail.com>"]
+description = "A stable and high-performance low-level memory management library for Rust, providing fixed-capacity pools and deterministic allocation for latency-sensitive systems."
+keywords = ["memory", "allocator", "pool", "performance", "low-latency"]
+categories = ["memory-management", "data-structures", "no-std", "performance"]
+license = "MIT"
+readme = "README.md"
 
+[badges]
+maintenance = { status = "actively-developed" }
 
 [profile.bench]
 overflow-checks = false

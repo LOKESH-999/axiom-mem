@@ -1,4 +1,3 @@
-#![feature(allocator_api)]
 //! # Low-Level Memory Utilities
 //! This crate provides high-performance memory management utilities,
 //! allowing management of `T`-typed memory with either pre-allocated
