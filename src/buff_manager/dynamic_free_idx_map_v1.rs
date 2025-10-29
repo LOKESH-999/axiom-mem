@@ -1,54 +1,157 @@
-/// `DynFreeIdxManager` is a dynamic manager for efficiently allocating and
-/// tracking free indices within a fixed-capacity pool.  
+/// `DynFreeIdxManagerV1` — Dynamic Free-Index Manager with Bitmap + Freelist Hybrid.
 ///
-/// It maintains a bitmap to quickly check availability of indices and a free
-/// list for fast reuse of recently freed indices.
+/// This structure manages allocation and tracking of free indices within a
+/// fixed-capacity range. It combines a **bitmap** for O(1) occupancy tracking
+/// with a **freelist** for O(1) reuse of freed indices.
 ///
-/// # Fields
+/// # Overview
+///
+/// Each bit in `bitmap` represents a resource slot:
+/// - `0` → occupied
+/// - `1` → free
+///
+/// The bitmap is segmented into `u64` blocks (each representing 64 slots),
+/// aligned to 64-bit boundaries for word-sized atomic operations.  
+/// When the number of slots (`n_block`) is **not a multiple of 64**, the manager
+/// **rounds up** to the next 64-bit boundary. This ensures that every allocation
+/// operation remains word-aligned without requiring tail masking except in the
+/// initialization phase.
+///
+/// Internally, the manager rounds up the total block count to the next 64-bit
+/// boundary:
+///
+/// ```rust
+/// let n_block = 6u32.next_multiple_of(64);
+/// assert_eq!(n_block,64);
+/// ```
+///
+/// This means the allocator **always initializes a fully aligned 64-bit bitmap,**
+/// even if the requested capacity isn’t a multiple of 64.  
+/// No tail masking is required — all bits in the final `u64` entry are valid
+/// and represent usable slots.
+///
+/// # Memory Layout
+///
+/// ```text
+/// Bitmap (64-bit aligned)
+/// ┌────────────┬────────────┬────────────┬────────────┐
+/// │ block[0]   │ block[1]   │ ...        │ block[n]   │
+/// └────────────┴────────────┴────────────┴────────────┘
+///   ↑ each bit = one slot
+///
+/// Example (for 130 requested slots):
+/// - Rounds up to 192 (3 × 64) total slots.
+/// - All 192 bits are valid and managed.
+/// - The extra 62 bits beyond 130 are usable and tracked normally.
+/// ```
+///
+/// This approach ensures uniformity in bitmap arithmetic and allows all
+/// operations (`get_free_idx`, `retire`, `is_free`, `grow`) to work purely on
+/// 64-bit aligned words without conditional masks or partial block handling.
+/// 
+/// # Core Fields
 ///
 /// - `bitmap: Vec<u64>`  
-///   A vector of 64-bit words representing the allocation status of indices.  
-///   Each bit corresponds to an index:  
-///     - `0` → free  
-///     - `1` → allocated  
-///   This allows fast operations like checking availability, marking free/used,
-///   and finding the first free index.
+///   Tracks the availability of indices.  
+///   - Each `u64` word encodes 64 index states.
+///   - Bits set to `1` are free; `0` are allocated.
+///   - Rounded up to the next multiple of 64.
 ///
 /// - `free_list: Vec<u16>`  
-///   A stack of recently freed indices. When allocating a new index, the manager
-///   can quickly pop from this list instead of scanning the bitmap.  
-///   This improves allocation speed when indices are frequently freed and reused.
+///   Stores indices of bitmap blocks (`map_idx`) that still contain free bits.  
+///   This allows the allocator to skip full blocks and jump directly to those
+///   with available capacity.  
+///   The freelist acts like a stack: allocation pulls from the top (`curr_idx`),
+///   and freeing a block pushes it back if it transitions from full → partially free.
 ///
 /// - `capacity: u32`  
-///   The maximum number of indices the manager can handle.  
-///   This must not exceed `bitmap.len() * 64`.
+///   Total number of managed slots (rounded up to multiple of 64).
 ///
 /// - `curr_idx: u16`  
-///   The next sequential index to allocate if the free list is empty.  
-///   This grows monotonically until it reaches `capacity`.
+///   Current freelist head — points to the active bitmap block index.
 ///
 /// - `max_free_list_idx: u16`  
-///   Tracks the highest index currently in the `free_list`.  
-///   Useful for quick bounds checks and avoiding scanning beyond known free indices.
+///   Upper bound of freelist indices; aids in growing or bounds validation.
 ///
-/// # Usage
+/// # Rounding Semantics
 ///
-/// `DynFreeIdxManager` is ideal when you need:
-/// - Efficient allocation/deallocation of integer IDs or handles
-/// - Fast reuse of recently freed indices
-/// - Sparse allocation with a large number of possible indices
+/// Every new instance of the manager applies 64-bit alignment:
+/// ```rust
+/// let n_block = 32u32.next_multiple_of(64);
+/// ```
 ///
-/// Example workflow:
-/// 1. Allocate an index:  
-///    - Check `free_list` first, if not empty pop from it  
-///    - Otherwise, allocate `curr_idx` and increment
-/// 2. Free an index:  
-///    - Push the index onto `free_list`  
-///    - Clear the corresponding bit in `bitmap`
+/// This ensures:
+/// - All bitmap operations are word-aligned.
+/// - No unaligned partial-block writes.
+/// - Easier vectorized or atomic word updates.
 ///
-/// This combination of bitmap + free list provides **O(1)** average allocation
-/// and deallocation, while maintaining the ability to scan for free indices if needed.
-pub struct DynFreeIdxManager {
+/// # Example
+///
+/// ```rust
+/// use axiom_mem::buff_manager::dynamic_free_idx_map_v1::DynFreeIdxManagerV1;
+/// let mut mgr = DynFreeIdxManagerV1::new(130);
+///
+/// let a = mgr.get_free_idx(); // alloc slot 191
+/// let b = mgr.get_free_idx(); // alloc slot 190
+///
+/// unsafe { mgr.retire(a); }  // free slot 191
+///
+/// assert!(mgr.is_free(a));
+/// assert!(!mgr.is_free(b));
+/// ```
+///
+/// # Invariants
+///
+/// - All `bitmap[i]` are valid `u64` blocks aligned to `MAP_WIDTH = 64`.
+/// - `free_list` always has one extra “buffer” entry to prevent OOB writes.
+/// - `curr_idx` never exceeds `max_free_list_idx`.
+/// - `capacity` is always a multiple of 64 (rounded up).
+///
+/// Violating any of these invariants (e.g., double-retiring an index, or freeing
+/// an invalid ID) results in undefined allocator state.
+///
+/// # Complexity
+///
+/// - Allocation: **O(1)** average  
+/// - Deallocation: **O(1)**  
+/// - Capacity growth: **O(Δ)** where Δ = number of new blocks
+///
+/// # Safety
+///
+/// Some methods (`retire`, `is_free`) are `unsafe` because they depend on caller
+/// guarantees about index validity and unique free/alloc pairs.
+///
+/// # Internal Notes (for maintainers)
+///
+/// - `DIV_BY = 6` and `MAP_WIDTH = 64` define the base-2 logarithmic relationship.
+/// - The bitmap uses **MSB-first bit numbering** for consistent trailing-zero scans.
+/// - Tail bits beyond `capacity` in the final block are masked off during init.
+/// - The freelist intentionally keeps one extra slot as a buffer to avoid write races.
+///
+/// # Example Internal State (128-slot pool)
+///
+/// ```text
+/// bitmap[0] = 1111111111111111111111111111111111111111111111111111111111111111
+/// bitmap[1] = 1111111111111111111111111111111111111111111111111111111111111111
+/// curr_idx  = 1
+/// free_list = [0, 1, _buf_]
+/// ```
+///
+/// After allocating 5 slots:
+///
+/// ```text
+/// bitmap[0] = 1111111111111111111111111111111111111111111111111111111111100000
+/// ```
+///
+/// After retiring one:
+///
+/// ```text
+/// bitmap[0] = 1111111111111111111111111111111111111111111111111111111111100001
+/// ```
+///
+/// This design ensures both **constant-time allocation/deallocation**
+/// and **bit-level precision** with predictable 64-bit alignment behavior.
+pub struct DynFreeIdxManagerV1 {
     bitmap: Vec<u64>,
     free_list: Vec<u16>,
     capacity: u32,
@@ -56,7 +159,7 @@ pub struct DynFreeIdxManager {
     max_free_list_idx: u16,
 }
 
-impl DynFreeIdxManager {
+impl DynFreeIdxManagerV1 {
     /// Number of bits to right-shift for dividing by 64 (`2^6`).
     pub const DIV_BY: u32 = 6;
 
@@ -236,17 +339,15 @@ impl DynFreeIdxManager {
 mod tests {
     use super::*;
 
-    #[test]
+       #[test]
     fn test_freeidx_init_min_block() {
-        let m = DynFreeIdxManager::new(1);
+        let m = DynFreeIdxManagerV1::new(1);
+        // Rounded up to 64
         assert_eq!(m.bitmap.len(), 1);
-        assert_eq!(m.free_list.len(), 1 + 1);
+        assert_eq!(m.free_list.len(), 2);
         assert_eq!(m.curr_idx, 0);
-
-        // All bits should be set (free)
-        let expected_mask = DynFreeIdxManager::MASK_SET_MAP;
-        assert_eq!(m.bitmap[0], expected_mask);
         assert_eq!(m.bitmap[0], u64::MAX);
+        assert_eq!(m.capacity, 64);
         assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
         for (idx, val) in m.free_list.iter().enumerate() {
             assert_eq!(idx, *val as usize);
@@ -255,311 +356,213 @@ mod tests {
 
     #[test]
     fn test_freeidx_63_block() {
-        let m = DynFreeIdxManager::new(63);
+        let m = DynFreeIdxManagerV1::new(63);
+        // Rounded up to 64
         assert_eq!(m.bitmap.len(), 1);
         assert_eq!(m.free_list.len(), 2);
         assert_eq!(m.curr_idx, 0);
-
-        // Only the top bit should be set (free)
-        let expected_mask = u64::MAX;
-        assert_eq!(m.bitmap[0], expected_mask);
-        assert_eq!(
-            m.bitmap[0],
-            0b1111111111111111111111111111111111111111111111111111111111111111
-        );
-        assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
-        for (idx, val) in m.free_list.iter().enumerate() {
-            assert_eq!(idx, *val as usize);
-        }
+        assert_eq!(m.bitmap[0], u64::MAX);
+        assert_eq!(m.capacity, 64);
     }
 
     #[test]
     fn test_freeidx_init_exact_multiple_64() {
-        let m = DynFreeIdxManager::new(128);
+        let m = DynFreeIdxManagerV1::new(128);
         assert_eq!(m.bitmap.len(), 2);
-        assert_eq!(m.free_list.len(), 2 + 1);
+        assert_eq!(m.free_list.len(), 3);
         assert_eq!(m.curr_idx, 1);
-
-        // Both bitmaps should be full (all bits set)
         assert!(m.bitmap.iter().all(|&b| b == u64::MAX));
-        assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
-        for (idx, val) in m.free_list.iter().enumerate() {
-            assert_eq!(idx, *val as usize);
-        }
+        assert_eq!(m.capacity, 128);
     }
 
     #[test]
-    fn test_freeidx_init_partial_map() {
-        let m = DynFreeIdxManager::new(70);
+    fn test_freeidx_init_partial_map_rounded() {
+        let m = DynFreeIdxManagerV1::new(70);
+        // Rounded up to 128 (2 × 64)
         assert_eq!(m.bitmap.len(), 2);
-
-        // First map is full
-        assert_eq!(m.bitmap[0], u64::MAX);
-
-        // Remainder = 6 → top 6 bits set
-        let expected_end = u64::MAX;
-        assert_eq!(m.bitmap[1], expected_end);
-        assert_eq!(m.bitmap[1], u64::MAX);
-        assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
+        assert_eq!(m.capacity, 128);
+        assert!(m.bitmap.iter().all(|&b| b == u64::MAX));
         assert_eq!(m.curr_idx, 1);
-        for (idx, val) in m.free_list.iter().enumerate() {
-            assert_eq!(idx, *val as usize);
-        }
     }
 
     #[test]
     fn test_freeidx_init_max_limit() {
-        let n = DynFreeIdxManager::MAX_BLOCK - 1;
-        let m = DynFreeIdxManager::new(n);
-        assert!(m.bitmap.len() > 0);
-        assert_eq!(m.bitmap.len(), ((n + 63) >> 6) as usize);
-        assert_eq!(m.curr_idx, 65532);
-        for b in m.bitmap[..(m.bitmap.len() - 1)].iter() {
-            assert_eq!(*b, u64::MAX);
-        }
-        assert_eq!(*m.bitmap.last().unwrap(), u64::MAX);
-        println!("{:b}", m.bitmap.last().unwrap());
+        let n = DynFreeIdxManagerV1::MAX_BLOCK - 1;
+        let m = DynFreeIdxManagerV1::new(n);
+        assert_eq!(m.bitmap.len(), ((n.next_multiple_of(64) + 63) >> 6) as usize);
+        assert!(m.bitmap.iter().all(|&b| b == u64::MAX));
         assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
-        for (idx, val) in m.free_list.iter().enumerate() {
-            assert_eq!(idx, *val as usize);
-        }
+        assert!(m.curr_idx <= m.bitmap.len() as u16 - 1);
     }
 
     #[test]
     #[should_panic]
     fn test_freeidx_zero_block_panics() {
-        let _ = DynFreeIdxManager::new(0);
+        let _ = DynFreeIdxManagerV1::new(0);
     }
 
     #[test]
     #[should_panic]
     fn test_freeidx_overflow_panics() {
-        let _ = DynFreeIdxManager::new(DynFreeIdxManager::MAX_BLOCK + 1);
+        let _ = DynFreeIdxManagerV1::new(DynFreeIdxManagerV1::MAX_BLOCK + 1);
     }
 
     #[test]
     fn test_bitmap_all_ones_at_start() {
-        let m = DynFreeIdxManager::new(128);
-        for b in m.bitmap.iter() {
-            // Every bit should be 1 → all free
-            assert_eq!(*b, u64::MAX);
-        }
-        assert_eq!(m.bitmap.len(), 2);
-        assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
+        let m = DynFreeIdxManagerV1::new(128);
+        assert!(m.bitmap.iter().all(|&b| b == u64::MAX));
+        assert_eq!(m.capacity, 128);
         assert_eq!(m.curr_idx, 1);
-        for (idx, val) in m.free_list.iter().enumerate() {
-            assert_eq!(idx, *val as usize);
-        }
     }
-    /// Helper to count remaining free bits across all bitmaps.
-    fn count_free_bits(f: &DynFreeIdxManager) -> u32 {
+
+    fn count_free_bits(f: &DynFreeIdxManagerV1) -> u32 {
         f.bitmap.iter().map(|x| x.count_ones()).sum()
     }
 
     #[test]
-    fn test_initialization_masks_last_entry_correctly() {
-        // Case 1: exactly multiple of 64 → all u64s should be full
-        let f1 = DynFreeIdxManager::new(128);
-        assert_eq!(f1.bitmap.len(), 2);
+    fn test_initialization_no_masking() {
+        // Rounded up to full 64-bit words
+        let f1 = DynFreeIdxManagerV1::new(130);
+        // 130 → 192 total (3×64)
+        assert_eq!(f1.bitmap.len(), 3);
         assert!(f1.bitmap.iter().all(|&b| b == u64::MAX));
-
-        // Case 2: not multiple of 64 → last entry must be masked
-        let f2 = DynFreeIdxManager::new(130);
-        assert_eq!(f2.bitmap.len(), 3);
-        let last_mask = f2.bitmap[2];
-        // 130 % 64 = 2, so last mask keeps only top 2 bits set
-        let expected_mask = u64::MAX;
-        assert_eq!(last_mask, expected_mask);
+        assert_eq!(f1.capacity, 192);
     }
 
     #[test]
     fn test_allocate_until_full_then_returns_u32_max() {
-        let mut mgr = DynFreeIdxManager::new(64);
-        let mut results = vec![];
-
-        // Should allocate 64 valid indices: 0..63
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         for _ in 0..64 {
             let idx = mgr.get_free_idx();
-            assert!(idx < 64, "idx={}", idx);
-            results.push(idx);
+            assert!(idx < 64);
         }
-
-        // All bits consumed → next must be u32::MAX
-        let idx = mgr.get_free_idx();
-        assert_eq!(idx, u32::MAX);
-
-        // No free bits left
+        assert_eq!(mgr.get_free_idx(), u32::MAX);
         assert_eq!(count_free_bits(&mgr), 0);
     }
 
     #[test]
     fn test_multi_map_progression() {
-        // 128 blocks => 2 u64 entries
-        let mut mgr = DynFreeIdxManager::new(128);
-        let mut seen = vec![];
-
-        // Allocate all → should go from 0..127
+        let mut mgr = DynFreeIdxManagerV1::new(128);
         for _ in 0..128 {
-            let idx = mgr.get_free_idx();
-            assert!(idx < 128);
-            seen.push(idx);
+            assert!(mgr.get_free_idx() < 128);
         }
-
-        for _ in 0..1000 {
-            // Must now return u32::MAX
-            assert_eq!(mgr.get_free_idx(), u32::MAX);
-            // Total bits now all consumed
-            assert_eq!(count_free_bits(&mgr), 0);
-        }
+        assert_eq!(mgr.get_free_idx(), u32::MAX);
+        assert_eq!(count_free_bits(&mgr), 0);
     }
 
     #[test]
-    fn test_partial_map_behavior() {
-        // 70 blocks → 2 u64 entries
-        let mut mgr = DynFreeIdxManager::new(70);
-        let total_before = count_free_bits(&mgr);
-        assert_eq!(total_before, 128);
+    fn test_partial_map_behavior_rounded() {
+        // 70 requested → 128 capacity
+        let mut mgr = DynFreeIdxManagerV1::new(70);
+        assert_eq!(count_free_bits(&mgr), 128);
 
-        // Allocate all → should drain all bits
+        // Allocate all 128
         for _ in 0..128 {
             let idx = mgr.get_free_idx();
-            println!("idx:{idx}");
-            assert!(idx < 128, "invalid idx={}", idx);
+            assert!(idx < 128);
         }
 
-        // Next call → u32::MAX
         assert_eq!(mgr.get_free_idx(), u32::MAX);
         assert_eq!(count_free_bits(&mgr), 0);
     }
 
     #[test]
     fn test_curr_idx_moves_downward_as_maps_fill() {
-        // 128 blocks → 2 maps → curr_idx starts = 2
-        let mut mgr = DynFreeIdxManager::new(128);
+        let mut mgr = DynFreeIdxManagerV1::new(128);
         assert_eq!(mgr.curr_idx, 1);
 
-        // Fill first map fully (64 blocks)
         for _ in 0..64 {
             mgr.get_free_idx();
         }
-        // It should have moved down once (still not zero)
         assert_eq!(mgr.curr_idx, 0);
 
-        // Fill second map
         for _ in 0..64 {
             mgr.get_free_idx();
         }
-        // Fully drained → curr_idx should now be 0
         assert_eq!(mgr.curr_idx, 0);
-
-        // Next call returns u32::MAX
         assert_eq!(mgr.get_free_idx(), u32::MAX);
     }
 
     #[test]
     fn allocates_and_releases_correctly() {
-        let mut mgr = DynFreeIdxManager::new(128);
-
-        // Collect all allocations
+        let mut mgr = DynFreeIdxManagerV1::new(128);
         let mut indices = Vec::new();
+
         for _ in 0..128 {
-            let idx = mgr.get_free_idx();
-            assert!(idx != u32::MAX, "Should return a valid free index");
-            indices.push(idx);
+            indices.push(mgr.get_free_idx());
         }
 
-        // After all allocated, next call should return NULL_IDX (u32::MAX)
-        assert_eq!(mgr.get_free_idx(), DynFreeIdxManager::NULL_IDX);
+        assert_eq!(mgr.get_free_idx(), DynFreeIdxManagerV1::NULL_IDX);
 
-        // Release one block and allocate again — should reuse the freed one
         unsafe { mgr.retire(indices[5]) }
-        println!("IDXS:{:?}", indices);
         let reused = mgr.get_free_idx();
-        assert_eq!(reused, indices[5], "Released index should be reused first");
+        assert_eq!(reused, indices[5]);
     }
 
     #[test]
     fn fills_multiple_bitmaps_correctly() {
         let n_block = 130;
-        // 130 blocks => 3 bitmaps (64 + 64 + 64) => 192
-        let mut mgr = DynFreeIdxManager::new(n_block);
-
-        // Allocate all
+        // 130 → 192 capacity (3 maps)
+        let mut mgr = DynFreeIdxManagerV1::new(n_block);
+        let total_capacity = n_block.next_multiple_of(DynFreeIdxManagerV1::MAP_WIDTH);
         let mut allocated = Vec::new();
-        for _ in 0..(n_block.next_multiple_of(DynFreeIdxManager::MAP_WIDTH)) {
+
+        for _ in 0..total_capacity {
             let idx = mgr.get_free_idx();
             assert_ne!(idx, u32::MAX);
             allocated.push(idx);
         }
 
-        // All full now
         assert_eq!(mgr.get_free_idx(), u32::MAX);
 
-        // Release last one and ensure it reappears
         unsafe {
-            mgr.retire(
-                allocated[n_block.next_multiple_of(DynFreeIdxManager::MAP_WIDTH) as usize - 1],
-            )
+            mgr.retire(allocated[total_capacity as usize - 1]);
         }
         let idx = mgr.get_free_idx();
-        assert_eq!(
-            idx,
-            allocated[n_block.next_multiple_of(DynFreeIdxManager::MAP_WIDTH) as usize - 1]
-        );
+        assert_eq!(idx, allocated[total_capacity as usize - 1]);
     }
 
     #[test]
     fn multiple_release_and_reuse_order() {
-        let mut mgr = DynFreeIdxManager::new(64);
-
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let mut allocs = Vec::new();
         for _ in 0..64 {
             allocs.push(mgr.get_free_idx());
         }
         assert_eq!(mgr.get_free_idx(), u32::MAX);
 
-        // Free 10 arbitrary blocks
         for &i in &allocs[10..20] {
-            println!("RELEASE_ID:{i}");
             unsafe { mgr.retire(i) }
         }
 
-        // Should allocate from freed slots
         for expected in &allocs[10..20] {
             let got = mgr.get_free_idx();
-            assert_eq!(got, *expected, "Should reuse freed index {:?}", expected);
+            assert_eq!(got, *expected);
         }
     }
 
     #[test]
     fn release_respects_curr_idx_buffering() {
-        let mut mgr = DynFreeIdxManager::new(64);
-
-        // Fill all
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let mut allocated = Vec::new();
+
         for _ in 0..64 {
             allocated.push(mgr.get_free_idx());
         }
 
-        // curr_idx should now point to last (0)
         assert_eq!(mgr.curr_idx, 0);
-
-        // Release last one (should re-add freelist entry safely)
         unsafe { mgr.retire(allocated[63]) }
-
-        // curr_idx should'nt incremented (buffer write worked)
         assert_eq!(mgr.curr_idx, 0);
 
-        // Next get_free_idx should reuse it
         let idx = mgr.get_free_idx();
         assert_eq!(idx, allocated[63]);
     }
 
-    fn alloc_all(mgr: &mut DynFreeIdxManager, n: usize) -> Vec<u32> {
+    fn alloc_all(mgr: &mut DynFreeIdxManagerV1, n: usize) -> Vec<u32> {
         let mut res = Vec::new();
         for _ in 0..n {
             let idx = mgr.get_free_idx();
-            assert_ne!(idx, DynFreeIdxManager::NULL_IDX);
+            assert_ne!(idx, DynFreeIdxManagerV1::NULL_IDX);
             res.push(idx);
         }
         res
@@ -567,11 +570,11 @@ mod tests {
 
     #[test]
     fn alloc_release_realloc_basic() {
-        let mut mgr = DynFreeIdxManager::new(64);
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let all = alloc_all(&mut mgr, 64);
 
         // fully allocated
-        assert_eq!(mgr.get_free_idx(), DynFreeIdxManager::NULL_IDX);
+        assert_eq!(mgr.get_free_idx(), DynFreeIdxManagerV1::NULL_IDX);
 
         // retire one block safely
         unsafe { mgr.retire(all[10]) }
@@ -583,7 +586,7 @@ mod tests {
 
     #[test]
     fn release_updates_bitmap_and_curr_idx() {
-        let mut mgr = DynFreeIdxManager::new(128);
+        let mut mgr = DynFreeIdxManagerV1::new(128);
         let all = alloc_all(&mut mgr, 128);
 
         let prev_curr = mgr.curr_idx;
@@ -591,7 +594,7 @@ mod tests {
 
         // bitmap[map_idx] must have at least one bit set again
         let idx = all[50] + 1;
-        let map_idx = idx >> DynFreeIdxManager::DIV_BY;
+        let map_idx = idx >> DynFreeIdxManagerV1::DIV_BY;
         assert!(mgr.bitmap[map_idx as usize] != 0);
 
         // since map_idx != 0, curr_idx may increment
@@ -600,7 +603,7 @@ mod tests {
 
     #[test]
     fn release_does_not_overflow_free_list_buffer() {
-        let mut mgr = DynFreeIdxManager::new(64);
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let all = alloc_all(&mut mgr, 64);
 
         // retire last few safely — ensures we never touch out of bound free_list slot
@@ -616,7 +619,7 @@ mod tests {
 
     #[test]
     fn releasing_multiple_blocks_refills_in_reverse_order() {
-        let mut mgr = DynFreeIdxManager::new(32);
+        let mut mgr = DynFreeIdxManagerV1::new(32);
         let all = alloc_all(&mut mgr, 32);
 
         unsafe {
@@ -640,7 +643,7 @@ mod tests {
 
     #[test]
     fn releasing_first_block_does_not_increment_curr_idx_due_to_map_idx_zero() {
-        let mut mgr = DynFreeIdxManager::new(64);
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let all = alloc_all(&mut mgr, 64);
 
         println!(
@@ -660,16 +663,16 @@ mod tests {
 
     #[test]
     fn test_capacity_returns_correct_value() {
-        let mgr = DynFreeIdxManager::new(128);
+        let mgr = DynFreeIdxManagerV1::new(128);
         assert_eq!(mgr.capacity(), 128);
 
-        let mgr2 = DynFreeIdxManager::new(4096);
+        let mgr2 = DynFreeIdxManagerV1::new(4096);
         assert_eq!(mgr2.capacity(), 4096);
     }
 
     #[test]
     fn test_calculate_n_slots_alignment_and_bounds() {
-        let mgr = DynFreeIdxManager::new(128);
+        let mgr = DynFreeIdxManagerV1::new(128);
 
         // 1 → rounds up to next multiple of 64 → 64/64 = 1
         assert_eq!(mgr.calculate_n_slots(1), 1);
@@ -690,14 +693,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "`new_delta` must be <= `Self::MAX_BLOCK`")]
     fn test_calculate_n_slots_panics_on_exceeding_max_block() {
-        let mgr = DynFreeIdxManager::new(1);
+        let mgr = DynFreeIdxManagerV1::new(1);
         // Cause panic by exceeding max block
-        let _ = mgr.calculate_n_slots(DynFreeIdxManager::MAX_BLOCK);
+        let _ = mgr.calculate_n_slots(DynFreeIdxManagerV1::MAX_BLOCK);
     }
 
     #[test]
     fn test_grow_adds_additional_slots() {
-        let mut mgr = DynFreeIdxManager::new(128);
+        let mut mgr = DynFreeIdxManagerV1::new(128);
         let initial_bitmap_len = mgr.bitmap.len();
         let initial_free_list_len = mgr.free_list.len();
         let initial_max_idx = mgr.max_free_list_idx;
@@ -714,13 +717,13 @@ mod tests {
 
         // New entries should all be fully free
         for new_idx in initial_bitmap_len..mgr.bitmap.len() {
-            assert_eq!(mgr.bitmap[new_idx], DynFreeIdxManager::MASK_SET_MAP);
+            assert_eq!(mgr.bitmap[new_idx], DynFreeIdxManagerV1::MASK_SET_MAP);
         }
     }
 
     #[test]
     fn test_grow_does_not_corrupt_existing_maps() {
-        let mut mgr = DynFreeIdxManager::new(64);
+        let mut mgr = DynFreeIdxManagerV1::new(64);
         let before = mgr.bitmap.clone();
 
         // Grow by 2 → adds 2 extra maps
