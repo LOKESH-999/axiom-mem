@@ -324,7 +324,7 @@ impl DynFreeIdxManagerV1 {
     // Violating this invariant will corrupt the freelist structure.
     // This is not a runtime guarantee — it is a contract for anyone
     // rewriting or extending these core allocator routines.
-    pub fn grow(&mut self, delta: u16) {
+    pub unsafe fn grow(&mut self, delta: u16) {
         for _ in 0..delta {
             self.bitmap.push(Self::MASK_SET_MAP);
             self.max_free_list_idx += 1;
@@ -706,7 +706,7 @@ mod tests {
         let initial_max_idx = mgr.max_free_list_idx;
 
         // Grow by 4 → adds 4 new u64 maps
-        mgr.grow(4);
+        unsafe { mgr.grow(4) };
 
         // Bitmap should have increased by 4
         assert_eq!(mgr.bitmap.len(), initial_bitmap_len + 4);
@@ -727,7 +727,7 @@ mod tests {
         let before = mgr.bitmap.clone();
 
         // Grow by 2 → adds 2 extra maps
-        mgr.grow(2);
+        unsafe { mgr.grow(2) };
 
         // Existing maps remain untouched
         assert_eq!(mgr.bitmap[0], before[0]);
