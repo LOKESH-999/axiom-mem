@@ -48,7 +48,7 @@
 /// This approach ensures uniformity in bitmap arithmetic and allows all
 /// operations (`get_free_idx`, `retire`, `is_free`, `grow`) to work purely on
 /// 64-bit aligned words without conditional masks or partial block handling.
-/// 
+///
 /// # Core Fields
 ///
 /// - `bitmap: Vec<u64>`  
@@ -242,14 +242,15 @@ impl DynFreeIdxManagerV1 {
         // println!("MAP_RES:{}",map_res);
 
         // Mark that bit as occupied
-        self.bitmap[map_idx as usize] &= !(1u64 << map_res);
+        self.bitmap[map_idx as usize] &= !(1u64.wrapping_shl(map_res));
 
         // Move to previous freelist entry if this map is now full
         self.curr_idx -= (self.bitmap[map_idx as usize] == 0) as u16 & (self.curr_idx != 0) as u16;
 
         // Compute global block index or return `u32::MAX` (branchless)
         ((-((map_res != 64) as i32)).cast_unsigned()
-            & ((Self::MAP_WIDTH - map_res - 1) + (map_idx as u32 * Self::MAP_WIDTH)))
+            & ((Self::MAP_WIDTH.saturating_sub(map_res).saturating_sub(1))
+                + (map_idx as u32 * Self::MAP_WIDTH)))
             | (-((map_res == 64) as i32)).cast_unsigned()
     }
 
@@ -266,7 +267,7 @@ impl DynFreeIdxManagerV1 {
         let is_to_add = (self.bitmap[map_idx as usize] == 0) & (map_idx != 0);
         // marking the `idx` in its `bitmap` slot.
         self.bitmap[map_idx as usize] |=
-            1u64 << (Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64));
+            1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
         // this acts as the buffer write.
         // And at the time of initilization we do cleverly add one extra slot to act as buff so we dont write in uninitilized memeory.
         self.free_list[self.curr_idx as usize + 1] = map_idx as u16;
@@ -296,7 +297,8 @@ impl DynFreeIdxManagerV1 {
     pub fn is_free(&self, idx: u32) -> bool {
         // dividing it by 64 inorder to find map-index.
         let map_idx = idx >> Self::DIV_BY;
-        let mask = 1u64 << (Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64));
+        let mask =
+            1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
         self.bitmap[map_idx as usize] & mask == mask
     }
 
@@ -339,7 +341,7 @@ impl DynFreeIdxManagerV1 {
 mod tests {
     use super::*;
 
-       #[test]
+    #[test]
     fn test_freeidx_init_min_block() {
         let m = DynFreeIdxManagerV1::new(1);
         // Rounded up to 64
@@ -389,7 +391,10 @@ mod tests {
     fn test_freeidx_init_max_limit() {
         let n = DynFreeIdxManagerV1::MAX_BLOCK - 1;
         let m = DynFreeIdxManagerV1::new(n);
-        assert_eq!(m.bitmap.len(), ((n.next_multiple_of(64) + 63) >> 6) as usize);
+        assert_eq!(
+            m.bitmap.len(),
+            ((n.next_multiple_of(64) + 63) >> 6) as usize
+        );
         assert!(m.bitmap.iter().all(|&b| b == u64::MAX));
         assert_eq!(m.bitmap.len(), m.free_list.len() - 1);
         assert!(m.curr_idx <= m.bitmap.len() as u16 - 1);

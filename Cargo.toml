@@ -1,6 +1,6 @@
 [package]
 name = "axiom_mem"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/LOKESH-999/axiom-mem"
 documentation = "https://docs.rs/axiom-mem"
@@ -13,12 +13,3 @@ readme = "README.md"
 
 [badges]
 maintenance = { status = "actively-developed" }
-
-[profile.bench]
-overflow-checks = false
-[profile.dev]
-overflow-checks = false
-[profile.release]
-overflow-checks = false
-[profile.test]
-overflow-checks = false

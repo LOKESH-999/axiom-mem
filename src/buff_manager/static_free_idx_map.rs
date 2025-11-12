@@ -125,14 +125,15 @@ impl FreeIdxManager {
         // println!("MAP_RES:{}",map_res);
 
         // Mark that bit as occupied
-        self.bitmap[map_idx as usize] &= !(1u64 << map_res);
+        self.bitmap[map_idx as usize] &= !(1u64.wrapping_shl(map_res));
 
         // Move to previous freelist entry if this map is now full
         self.curr_idx -= (self.bitmap[map_idx as usize] == 0) as u16 & (self.curr_idx != 0) as u16;
 
         // Compute global block index or return `u32::MAX` (branchless)
         ((-((map_res != 64) as i32)).cast_unsigned()
-            & ((Self::MAP_WIDTH - map_res - 1) + (map_idx as u32 * Self::MAP_WIDTH)))
+            & ((Self::MAP_WIDTH.saturating_sub(map_res).saturating_sub(1))
+                + (map_idx as u32 * Self::MAP_WIDTH)))
             | (-((map_res == 64) as i32)).cast_unsigned()
     }
 
@@ -149,7 +150,7 @@ impl FreeIdxManager {
         let is_to_add = (self.bitmap[map_idx as usize] == 0) & (map_idx != 0);
         // marking the `idx` in its `bitmap` slot.
         self.bitmap[map_idx as usize] |=
-            1u64 << (Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64));
+            1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
         // this acts as the buffer write.
         // And at the time of initilization we do cleverly add one extra slot to act as buff so we dont write in uninitilized memeory.
         self.free_list[self.curr_idx as usize + 1] = map_idx as u16;
@@ -177,7 +178,8 @@ impl FreeIdxManager {
     /// - Checks if the bit is set (free).
     pub const unsafe fn is_free(&self, idx: u32) -> bool {
         let map_idx = idx >> Self::DIV_BY;
-        let mask = 1u64 << (Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64));
+        let mask =
+            1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
         self.bitmap[map_idx as usize] & mask == mask
     }
 }
