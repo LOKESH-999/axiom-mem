@@ -23,7 +23,7 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::buff_manager::static_free_idx_map::FreeIdxManager;
+use crate::buff_manager::static_buff::static_free_idx_map::FreeIdxManager;
 
 /// Represents a contiguous memory region divided into fixed-size blocks.
 ///

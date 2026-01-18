@@ -1,31 +1,38 @@
-//! # Memory Pool Modules
+//! ============================================================
+//! 🧩 Buffer Manager — Module Overview
+//! ============================================================
 //!
-//! High-performance memory management primitives for reusable buffer and object pools.
+//! This module groups all buffer-pool implementations used in
+//! `axiom-mem`. Buffers are organized based on whether their
+//! capacity is **fixed** or **growable**:
 //!
-//! This crate offers both **static** and **dynamic** allocation strategies designed
-//! for systems where low-latency and predictable memory access are critical.
+//! - [`static_buff`]
+//!     Non-growable buffers. Capacity is fixed at initialization.
+//!     These pools are optimized for predictable memory usage,
+//!     stable latency, and cache-friendly access patterns.
 //!
-//! ## Modules
+//! - [`dynamic_buff`]
+//!     Growable buffers. Capacity can increase at runtime when
+//!     allocation demand grows. Useful for bursty or unbounded
+//!     workloads where flexibility is required.
 //!
-//! - [`dynamic_free_idx_map_v1`] — dynamic bitmap for tracking free slots in resizable pools.
-//! - [`static_array_buffer`] — fixed-size buffer pool manager for raw memory arrays.
-//! - [`static_free_idx_map`] — compact bitmap-based free index tracking for static pools.
-//! - [`static_object_buffer`] — ergonomic object pool with automatic slot recycling.
+//! # Re-exports
+//! The most common static buffer managers are re-exported here for
+//! convenience:
 //!
-//! ## Re-exports
+//! - [`BufferPoolManager`] — Manages fixed-size array buffers  
+//! - [`ObjectPoolManager`] — Manages fixed-size object pools
 //!
-//! - [`BufferPoolManager`] — from [`static_array_buffer`]; manages fixed-size raw buffers.
-//! - [`ObjectPoolManager`] — from [`static_object_buffer`]; manages typed objects with automatic reuse.
+//! These re-exports allow direct usage via:
 //!
-//! ## Safety
+//! ```rust
+//! use axiom_mem::buff_manager::BufferPoolManager;
+//! ```
 //!
-//! Many of the low-level operations allow raw pointer arithmetic and unchecked access.
-//! These APIs are safe when used according to their documented contracts but
-//! may cause undefined behavior if misused.
-pub mod dynamic_free_idx_map_v1;
-pub mod static_array_buffer;
-pub mod static_free_idx_map;
-pub mod static_object_buffer;
+//! ============================================================
 
-pub use static_array_buffer::BufferPoolManager;
-pub use static_object_buffer::ObjectPoolManager;
+pub mod static_buff;
+pub mod dynamic_buff;
+
+pub use static_buff::static_array_buffer::BufferPoolManager;
+pub use static_buff::static_object_buffer::ObjectPoolManager;

@@ -122,7 +122,6 @@ impl FreeIdxManager {
 
         // Find first free bit in this 64-bit map (returns 64 if none)
         let map_res = self.bitmap[map_idx as usize].trailing_zeros();
-        // println!("MAP_RES:{}",map_res);
 
         // Mark that bit as occupied
         self.bitmap[map_idx as usize] &= !(1u64.wrapping_shl(map_res));
