@@ -23,7 +23,7 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::buff_manager::static_buff::static_free_idx_map::FreeIdxManager;
+use crate::object_pool::static_buff::static_free_idx_map::FreeIdxManager;
 
 /// Represents a contiguous memory region divided into fixed-size blocks.
 ///
@@ -60,7 +60,7 @@ impl<T> RawBuffers<T> {
             n_blocks,
         }
     }
-    const fn layout(block_size: u32, n_blocks: u32) -> Layout {
+    fn layout(block_size: u32, n_blocks: u32) -> Layout {
         let size = block_size as u64 * n_blocks as u64;
         let layout = Layout::array::<MaybeUninit<T>>(size as usize);
         match layout {
@@ -68,11 +68,11 @@ impl<T> RawBuffers<T> {
             Err(_) => panic!("COULD'NT CREATE LAYOUT"),
         }
     }
-    const unsafe fn get(&self, idx: u32) -> NonNull<MaybeUninit<T>> {
+    unsafe fn get(&self, idx: u32) -> NonNull<MaybeUninit<T>> {
         let count = self.block_size as u64 * idx as u64;
         unsafe { self.buff.add(count as usize) }
     }
-    const fn n_blocks(&self) -> u32 {
+    fn n_blocks(&self) -> u32 {
         self.n_blocks
     }
 }
@@ -118,7 +118,7 @@ impl<'o, T> Buff<'o, T> {
     ///
     /// Usually called internally by the pool manager. Users should obtain `Buff`
     /// instances via [`BufferPoolManager::pop_free()`].
-    pub const fn new(
+    pub fn new(
         buff_ptr: NonNull<MaybeUninit<T>>,
         id: u32,
         len: u32,
@@ -133,17 +133,17 @@ impl<'o, T> Buff<'o, T> {
     }
 
     /// Returns the block index in the pool.
-    pub const fn id(&self) -> u32 {
+    pub fn id(&self) -> u32 {
         self.id
     }
 
     /// Returns the capacity of the block (number of `T` slots).
-    pub const fn len(&self) -> u32 {
+    pub fn len(&self) -> u32 {
         self.len
     }
 
     /// Returns a raw pointer to the memory block (`MaybeUninit<T>`).
-    pub const fn as_mut_ptr(&self) -> *mut MaybeUninit<T> {
+    pub fn as_mut_ptr(&self) -> *mut MaybeUninit<T> {
         self.buff_ptr.as_ptr()
     }
 }
@@ -285,7 +285,7 @@ impl<T> Drop for Buff<'_, T> {
     /// # Safety
     /// Assumes all necessary drops for initialized elements have been handled.
     fn drop(&mut self) {
-        unsafe { self.buff_pool_manager_ref.retire(self.id) };
+        unsafe { self.buff_pool_manager_ref.unchecked_retire(self.id) };
     }
 }
 
@@ -360,7 +360,7 @@ impl<T> BufferPoolManager<T> {
     }
 
     /// Returns total no of blocks/capacity
-    pub const fn n_blocks(&self) -> u32 {
+    pub fn n_blocks(&self) -> u32 {
         unsafe { &*self.buff.get() }.n_blocks()
     }
 
@@ -373,7 +373,7 @@ impl<T> BufferPoolManager<T> {
     /// # Safety
     /// The returned `Buff` provides unique mutable access to a block.
     /// It must be explicitly released using `retire` when done.
-    pub const fn pop_free(&self) -> Option<Buff<'_, T>> {
+    pub fn pop_free(&self) -> Option<Buff<'_, T>> {
         let (buff, idx_map) = self.get_mut();
         let free_idx = idx_map.get_free_idx();
         if free_idx != FreeIdxManager::NULL_IDX {
@@ -388,7 +388,7 @@ impl<T> BufferPoolManager<T> {
     /// # Safety
     /// Caller must ensure exclusive access to prevent aliasing.
     #[allow(clippy::mut_from_ref)]
-    const fn get_mut(&self) -> (&mut RawBuffers<T>, &mut FreeIdxManager) {
+    fn get_mut(&self) -> (&mut RawBuffers<T>, &mut FreeIdxManager) {
         unsafe {
             let buff = &mut *self.buff.get();
             let idx_map = &mut *self.free_list_manager.get();
@@ -402,9 +402,9 @@ impl<T> BufferPoolManager<T> {
     /// - `idx` must have been previously allocated by this manager.
     /// - The buffer at `idx` must not be accessed after retire.
     /// - Double retire or use-after-retire is undefined behavior.
-    const unsafe fn retire(&self, idx: u32) {
+    unsafe fn unchecked_retire(&self, idx: u32) {
         let (_, idx_map) = self.get_mut();
-        unsafe { idx_map.retire(idx) };
+        unsafe { idx_map.unchecked_retire(idx) };
     }
 }
 

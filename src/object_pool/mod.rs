@@ -31,8 +31,8 @@
 //!
 //! ============================================================
 
-pub mod static_buff;
 pub mod dynamic_buff;
+pub mod static_buff;
 
 pub use static_buff::static_array_buffer::BufferPoolManager;
 pub use static_buff::static_object_buffer::ObjectPoolManager;

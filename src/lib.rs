@@ -24,5 +24,7 @@
 //! where appropriate to maintain both **safety** and **branchless performance**.
 //!
 //! Users no longer need to disable overflow checks in debug or release builds.
-pub mod buff_manager;
-pub mod cache_padded;
+pub mod object_pool;
+
+pub mod free_idx_map;
+pub mod slot_pool;

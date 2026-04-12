@@ -7,7 +7,7 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::buff_manager::static_buff::static_free_idx_map::FreeIdxManager;
+use crate::object_pool::static_buff::static_free_idx_map::FreeIdxManager;
 
 /// Fixed-capacity object pool for type `T`.
 ///
@@ -79,7 +79,7 @@ impl<'o, T> Object<'o, T> {
     pub const fn into_inner(self) -> T {
         unsafe {
             let data = (*self.ptr.as_ptr()).assume_init_read();
-            self.pool_ref.retire(self.id);
+            self.pool_ref.unchecked_retire(self.id);
             mem::forget(self);
             data
         }
@@ -194,7 +194,7 @@ impl<T> Drop for Object<'_, T> {
     fn drop(&mut self) {
         unsafe {
             self.ptr.as_mut().assume_init_drop();
-            self.pool_ref.retire(self.id);
+            self.pool_ref.unchecked_retire(self.id);
         }
     }
 }
@@ -262,8 +262,8 @@ impl<T> ObjectPoolManager<T> {
     /// # Safety
     /// - Only call with a valid slot index previously returned by `pop_free`.
     /// - Double retire or invalid ID is *undefined behavior*.
-    const unsafe fn retire(&self, id: u32) {
-        unsafe { (&mut *self.free_idx_map.get()).retire(id) }
+    const unsafe fn unchecked_retire(&self, id: u32) {
+        unsafe { (&mut *self.free_idx_map.get()).unchecked_retire(id) }
     }
 
     /// Computes the index of a pointer within the pool without bounds checking.
@@ -309,7 +309,7 @@ impl<T> ObjectPoolManager<T> {
     ///
     /// # Example
     /// ```
-    /// use axiom_mem::buff_manager::ObjectPoolManager;
+    /// use axiom_mem::slot_pool::static_pool;
     /// let pool = ObjectPoolManager::new(2);
     /// let obj = pool.pop_free(42).unwrap();
     /// let raw = unsafe { obj.into_raw_ptr() };
@@ -326,7 +326,7 @@ impl<T> ObjectPoolManager<T> {
             // getting the drop idx
             let idx = self.get_idx_by_ptr_unchecked(ptr);
             // Marking the drop idx as free
-            self.retire(idx);
+            self.unchecked_retire(idx);
         }
     }
 
@@ -374,8 +374,8 @@ impl<T> ObjectPoolManager<T> {
     /// This function uses an `UnsafeCell` internally to access the free index map,
     /// but it provides a safe interface for checking slot availability.
     pub const fn is_free_idx(&self, id: u32) -> bool {
-        assert!(id <= self.size, "`Id` must be <= `self.size`");
-        unsafe { (*self.free_idx_map.get()).is_free(id) }
+        debug_assert!(id <= self.size, "`Id` must be <= `self.size`");
+        unsafe { (*self.free_idx_map.get()).unchecked_is_free(id) }
     }
 
     /// Checks if a given slot index is free in the pool without bounds checks.
@@ -395,7 +395,7 @@ impl<T> ObjectPoolManager<T> {
     /// - This delegates to the underlying `FreeIdxMap::is_free` method.
     /// - No bounds or validity checks are performed.
     pub const unsafe fn is_free_idx_unchecked(&self, id: u32) -> bool {
-        unsafe { (*self.free_idx_map.get()).is_free(id) }
+        unsafe { (*self.free_idx_map.get()).unchecked_is_free(id) }
     }
 }
 

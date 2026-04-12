@@ -14,7 +14,7 @@ fn main() {
     // Buffer pool example (fixed-size blocks of u32, 4 elements per block, 3 blocks)
     // -------------------------------------------------------------------------
     {
-        use axiom_mem::buff_manager::BufferPoolManager;
+        use axiom_mem::object_pool::BufferPoolManager;
 
         let pool = BufferPoolManager::<u32>::new(4, 3);
 
@@ -38,7 +38,7 @@ fn main() {
     // Object pool example (typed objects)
     // -------------------------------------------------------------------------
     {
-        use axiom_mem::buff_manager::ObjectPoolManager;
+        use axiom_mem::object_pool::ObjectPoolManager;
 
         let pool = ObjectPoolManager::<String>::new(8);
 

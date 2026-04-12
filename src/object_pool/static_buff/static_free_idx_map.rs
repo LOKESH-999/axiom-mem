@@ -9,7 +9,7 @@
 //!
 //! Optimized for high-performance allocation with:
 //! - Branchless index lookup
-//! - Constant-time allocation/retire
+//! - Constant-time allocation/unchecked_retire
 //! - Minimal metadata overhead
 
 /// Bitmap-based index manager for tracking free/used blocks within the pool.
@@ -116,7 +116,8 @@ impl FreeIdxManager {
     /// - Clears that bit (marks block as used).
     /// - Updates `curr_idx` if this bitmap chunk becomes empty.
     /// - Returns the global block index, or `u32::MAX` if none are free.
-    pub const fn get_free_idx(&mut self) -> u32 {
+    #[inline]
+    pub fn get_free_idx(&mut self) -> u32 {
         // Load current bitmap index from the freelist
         let map_idx = self.free_list[self.curr_idx as usize];
 
@@ -141,7 +142,8 @@ impl FreeIdxManager {
     /// - `idx` < total number of blocks managed.
     /// - The same `idx` is not released twice without a reallocation.
     ///   Violating either may corrupt the bitmap state or freelist tracking.
-    pub const unsafe fn retire(&mut self, id: u32) {
+    #[inline]
+    pub const unsafe fn unchecked_retire(&mut self, id: u32) {
         let idx = id;
         // dividing it by 64 inorder to find map-index.
         let map_idx = idx >> Self::DIV_BY;
@@ -175,7 +177,8 @@ impl FreeIdxManager {
     /// - Computes `map_idx` by dividing `idx` by 64 (`idx >> DIV_BY`) to locate the `u64` block.
     /// - Computes a `mask` to isolate the corresponding bit.
     /// - Checks if the bit is set (free).
-    pub const unsafe fn is_free(&self, idx: u32) -> bool {
+    #[inline]
+    pub const unsafe fn unchecked_is_free(&self, idx: u32) -> bool {
         let map_idx = idx >> Self::DIV_BY;
         let mask =
             1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
@@ -426,7 +429,7 @@ mod tests {
         assert_eq!(mgr.get_free_idx(), FreeIdxManager::NULL_IDX);
 
         // Release one block and allocate again — should reuse the freed one
-        unsafe { mgr.retire(indices[5]) }
+        unsafe { mgr.unchecked_retire(indices[5]) }
         println!("IDXS:{:?}", indices);
         let reused = mgr.get_free_idx();
         assert_eq!(reused, indices[5], "Released index should be reused first");
@@ -449,7 +452,7 @@ mod tests {
         assert_eq!(mgr.get_free_idx(), u32::MAX);
 
         // Release last one and ensure it reappears
-        unsafe { mgr.retire(allocated[129]) }
+        unsafe { mgr.unchecked_retire(allocated[129]) }
         let idx = mgr.get_free_idx();
         assert_eq!(idx, allocated[129]);
     }
@@ -467,7 +470,7 @@ mod tests {
         // Free 10 arbitrary blocks
         for &i in &allocs[10..20] {
             println!("RELEASE_ID:{i}");
-            unsafe { mgr.retire(i) }
+            unsafe { mgr.unchecked_retire(i) }
         }
 
         // Should allocate from freed slots
@@ -491,7 +494,7 @@ mod tests {
         assert_eq!(mgr.curr_idx, 0);
 
         // Release last one (should re-add freelist entry safely)
-        unsafe { mgr.retire(allocated[63]) }
+        unsafe { mgr.unchecked_retire(allocated[63]) }
 
         // curr_idx should'nt incremented (buffer write worked)
         assert_eq!(mgr.curr_idx, 0);
@@ -519,8 +522,8 @@ mod tests {
         // fully allocated
         assert_eq!(mgr.get_free_idx(), FreeIdxManager::NULL_IDX);
 
-        // retire one block safely
-        unsafe { mgr.retire(all[10]) }
+        // unchecked_retire one block safely
+        unsafe { mgr.unchecked_retire(all[10]) }
 
         // should reuse it again
         let reused = mgr.get_free_idx();
@@ -533,7 +536,7 @@ mod tests {
         let all = alloc_all(&mut mgr, 128);
 
         let prev_curr = mgr.curr_idx;
-        unsafe { mgr.retire(all[50]) }
+        unsafe { mgr.unchecked_retire(all[50]) }
 
         // bitmap[map_idx] must have at least one bit set again
         let idx = all[50] + 1;
@@ -549,9 +552,9 @@ mod tests {
         let mut mgr = FreeIdxManager::new(64);
         let all = alloc_all(&mut mgr, 64);
 
-        // retire last few safely — ensures we never touch out of bound free_list slot
+        // unchecked_retire last few safely — ensures we never touch out of bound free_list slot
         for &idx in all.iter().rev().take(5) {
-            unsafe { mgr.retire(idx) }
+            unsafe { mgr.unchecked_retire(idx) }
         }
 
         assert!(
@@ -566,9 +569,9 @@ mod tests {
         let all = alloc_all(&mut mgr, 32);
 
         unsafe {
-            mgr.retire(all[10]);
-            mgr.retire(all[11]);
-            mgr.retire(all[12]);
+            mgr.unchecked_retire(all[10]);
+            mgr.unchecked_retire(all[11]);
+            mgr.unchecked_retire(all[12]);
         }
 
         // order of reuse depends on free_list stack behavior — validate any freed ones are reused first
@@ -594,7 +597,7 @@ mod tests {
             mgr.bitmap, mgr.free_list, mgr.curr_idx
         );
         let prev = mgr.curr_idx;
-        unsafe { mgr.retire(all[0]) }
+        unsafe { mgr.unchecked_retire(all[0]) }
 
         // map_idx == 0 => curr_idx should NOT increment
         assert_eq!(mgr.curr_idx, prev);
