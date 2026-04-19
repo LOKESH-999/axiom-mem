@@ -3,7 +3,7 @@ use std::{
     ptr::NonNull,
 };
 
-pub trait SlotPool<T>:Deallocate {
+pub trait SlotPool<T>: Deallocate {
     /// Handle returned by the pool.
     ///
     /// Must:

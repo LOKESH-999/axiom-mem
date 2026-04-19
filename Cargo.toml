@@ -13,3 +13,9 @@ readme = "README.md"
 
 [badges]
 maintenance = { status = "actively-developed" }
+
+[features]
+mmap = ["libc"]
+
+[dependencies]
+libc = { version = "0.2.185", optional = true }

@@ -2,10 +2,6 @@ pub mod objects;
 pub mod static_pool;
 pub mod traits;
 
-
-
-
-
 use std::ops::{Deref, DerefMut};
 
 pub trait ObjectPool<T> {
@@ -48,7 +44,6 @@ pub trait Retire<T> {
     unsafe fn retire_by_ptr_unchecked(&self, ptr: NonNull<T>);
 }
 
-
 pub trait IndexedPool {
     /// Returns index for pointer.
     ///
@@ -62,7 +57,6 @@ pub trait IndexedPool {
     /// Unsafe fast path
     unsafe fn is_free_idx_unchecked(&self, idx: u32) -> bool;
 }
-
 
 pub trait Capacity {
     /// Total capacity of pool
@@ -81,9 +75,7 @@ pub trait Grow {
     fn grow(&self, new_capacity: usize) -> Result<(), ()>;
 }
 
-
-
-pub trait RawAccess<T>:ObjectPool<T> {
+pub trait RawAccess<T>: ObjectPool<T> {
     type PoolRef<'a>
     where
         Self: 'a;

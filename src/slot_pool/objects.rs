@@ -34,3 +34,5 @@ pub trait StaticObject<T>: Deref<Target = T> + DerefMut {
     /// Associated pool type
     type Pool;
 }
+
+// pub struct Object<T

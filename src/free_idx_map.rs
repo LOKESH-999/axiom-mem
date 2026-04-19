@@ -112,7 +112,7 @@ pub struct FreeIdxManager {
     /// Capacity of the Allocated/total slots
     capacity: u32,
     /// Count of Occupaid slots
-    occupaid:u32,
+    occupaid: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,7 +197,6 @@ impl std::error::Error for FreeMapError {}
 /// - Never returns an invalid or stale index
 /// - Returned indices always correspond to set bits in the bitmap
 impl FreeIdxManager {
-
     /// Number of bits to right-shift for dividing by 64 (`2^6`).
     pub const DIV_BY: u32 = 6;
 
@@ -265,7 +264,7 @@ impl FreeIdxManager {
             bitmap,
             curr_idx: len - 1,
             capacity: n_block,
-            occupaid:0
+            occupaid: 0,
         }
     }
 
@@ -276,7 +275,7 @@ impl FreeIdxManager {
     /// - Clears that bit (marks block as used).
     /// - Updates `curr_idx` if this bitmap chunk becomes empty.
     /// - Returns the global block index, or `u32::MAX` if none are free.
-    /// 
+    ///
     /// # Terminal Case Behavior
     ///
     /// When `curr_idx == 0`, the allocator operates on `free_list[0]`,
@@ -296,7 +295,6 @@ impl FreeIdxManager {
         // NOTE:
         // free_list[0] is a permanent fallback (map 0).
         // It may be empty (bitmap[0] == 0) and is not removed.
-
 
         // Load current bitmap index from the freelist
         let map_idx = self.free_list[self.curr_idx as usize];
@@ -319,7 +317,6 @@ impl FreeIdxManager {
         free_idx
     }
 
-    
     /// # Safety
     /// Caller must ensure:
     /// - `idx` < total number of blocks managed.
@@ -331,22 +328,21 @@ impl FreeIdxManager {
         // dividing it by 64 inorder to find map-index.
         let map_idx = Self::get_map_idx(idx);
         // if `self.bitmap[map_idx as usize] == 0` then we need to add a marking in `free_list`.
-        let is_to_add = (self.bitmap[map_idx as usize] == 0) & (map_idx != 0) ;
+        let is_to_add = (self.bitmap[map_idx as usize] == 0) & (map_idx != 0);
         // let shoudl_subtract = is_to_add & self.free_list[self.curr_idx as usize] == 0;
-        
+
         let has_added = unsafe { !self.unchecked_is_free(idx) };
         self.occupaid -= has_added as u32;
 
         // marking the `idx` in its `bitmap` slot.
         self.bitmap[map_idx as usize] |=
             1u64.wrapping_shl((Self::MAP_WIDTH as u64 - ((idx + 1) as u64 & Self::MASK_64)) as u32);
-        
+
         // this acts as the buffer write.
         // And at the time of initilization we do cleverly add one extra slot to act as buff so we dont write in uninitilized memeory.
         self.free_list[self.curr_idx as usize + 1] = map_idx as u16;
         // if `self.bitmap[map_idx as usize] == 0` then the above will be valid by we increment `curr_idx` else it acts as dead buff
         self.curr_idx += is_to_add as u16;
-
     }
 
     /// checks if a specific slot index is free in the bitmap.
@@ -447,7 +443,7 @@ impl FreeIdxManager {
 
     /// Returns the free slots
     #[inline(always)]
-    pub const fn free_slots(&self)-> u32{
+    pub const fn free_slots(&self) -> u32 {
         self.capacity - self.occupaid
     }
     /// Expands the capacity of the memory pool to a new length.
@@ -540,7 +536,11 @@ mod tests {
             assert!(seen.insert(idx), "duplicate freelist entry: {}", idx);
             assert!(
                 mgr.bitmap[idx] != 0 || (idx == 0),
-                "freelist contains empty map in active region:{idx},{},{:?},{:?},{}",mgr.bitmap[idx],mgr.bitmap,mgr.free_list,mgr.curr_idx
+                "freelist contains empty map in active region:{idx},{},{:?},{:?},{}",
+                mgr.bitmap[idx],
+                mgr.bitmap,
+                mgr.free_list,
+                mgr.curr_idx
             );
         }
 
@@ -565,14 +565,18 @@ mod tests {
         // Step 1: fully exhaust
         loop {
             let idx = mgr.get_free_idx();
-            if idx == u32::MAX { break; }
+            if idx == u32::MAX {
+                break;
+            }
             allocated.push(idx);
         }
 
         // Step 2: free ONLY map 0
         for &idx in &allocated {
             if FreeIdxManager::get_map_idx(idx) == 0 {
-                unsafe { mgr.unchecked_retire(idx); }
+                unsafe {
+                    mgr.unchecked_retire(idx);
+                }
             }
         }
 
@@ -585,7 +589,9 @@ mod tests {
         for _ in 0..50 {
             for &idx in &allocated {
                 if FreeIdxManager::get_map_idx(idx) != 0 {
-                    unsafe { mgr.unchecked_retire(idx); }
+                    unsafe {
+                        mgr.unchecked_retire(idx);
+                    }
                 }
             }
         }
@@ -607,10 +613,7 @@ mod tests {
             if top != 0 {
                 let idx = mgr.get_free_idx();
 
-                assert!(
-                    idx != u32::MAX,
-                    "BUG: map 0 lost, allocator returned NULL"
-                );
+                assert!(idx != u32::MAX, "BUG: map 0 lost, allocator returned NULL");
             }
         }
     }
@@ -623,7 +626,9 @@ mod tests {
             let idx = mgr.get_free_idx();
 
             if idx != u32::MAX {
-                unsafe { mgr.unchecked_retire(idx); }
+                unsafe {
+                    mgr.unchecked_retire(idx);
+                }
             }
 
             // check: if any bitmap has free space → freelist must reflect at least one
@@ -644,23 +649,27 @@ mod tests {
     fn test_rebuild_no_duplicate_map0_on_partial_expansion() {
         // Create a pool small enough to fit inside a single partial map (Map 0)
         let mut mgr = FreeIdxManager::new(10);
-        
+
         // Exhaust the pool completely (bitmap[0] becomes 0)
         for _ in 0..10 {
             mgr.get_free_idx();
         }
-        
+
         // Rebuild within the exact same chunk
         mgr.rebuild(50).unwrap();
-        
+
         // The fix (&& old_map_idx != 0) prevents 0 from being pushed onto the stack again.
         // We verify the active freelist region contains NO duplicate entries.
         let mut seen = std::collections::HashSet::new();
         for i in 0..=mgr.curr_idx as usize {
             let val = mgr.free_list[i];
-            assert!(seen.insert(val), "Duplicate map index found in freelist: {}", val);
+            assert!(
+                seen.insert(val),
+                "Duplicate map index found in freelist: {}",
+                val
+            );
         }
-        
+
         // Because we stayed in Map 0, curr_idx must still be exactly 0
         assert_eq!(mgr.curr_idx, 0);
     }
@@ -669,22 +678,26 @@ mod tests {
     fn test_rebuild_no_duplicate_map0_on_cross_segment_expansion() {
         // Create a pool small enough to fit inside a single partial map (Map 0)
         let mut mgr = FreeIdxManager::new(10);
-        
+
         // Exhaust the pool completely
         for _ in 0..10 {
             mgr.get_free_idx();
         }
-        
+
         // Rebuild across a chunk boundary (forces the creation of Map 1)
         mgr.rebuild(100).unwrap();
-        
+
         // Verify no duplicate entries were pushed during the boundary unmasking
         let mut seen = std::collections::HashSet::new();
         for i in 0..=mgr.curr_idx as usize {
             let val = mgr.free_list[i];
-            assert!(seen.insert(val), "Duplicate map index found in freelist: {}", val);
+            assert!(
+                seen.insert(val),
+                "Duplicate map index found in freelist: {}",
+                val
+            );
         }
-        
+
         // Since we expanded into Map 1, the stack must be exactly [0, 1]
         assert_eq!(mgr.curr_idx, 1);
         assert_eq!(mgr.free_list[0], 0);
@@ -853,16 +866,15 @@ mod tests {
 
         // free only map 0 entries
         for i in 0..64 {
-            unsafe { mgr.unchecked_retire(i); }
+            unsafe {
+                mgr.unchecked_retire(i);
+            }
         }
 
         // now allocator SHOULD return valid index
         let idx = mgr.get_free_idx();
 
-        assert!(
-            idx != u32::MAX,
-            "minimal repro: allocator missed map 0"
-        );
+        assert!(idx != u32::MAX, "minimal repro: allocator missed map 0");
     }
 
     #[test]
@@ -874,14 +886,18 @@ mod tests {
         // exhaust all
         loop {
             let idx = mgr.get_free_idx();
-            if idx == u32::MAX { break; }
+            if idx == u32::MAX {
+                break;
+            }
             allocated.push(idx);
         }
 
         // free only map 0
         for &idx in &allocated {
             if FreeIdxManager::get_map_idx(idx) == 0 {
-                unsafe { mgr.unchecked_retire(idx); }
+                unsafe {
+                    mgr.unchecked_retire(idx);
+                }
             }
         }
 
@@ -889,7 +905,9 @@ mod tests {
         for _ in 0..5 {
             for &idx in &allocated {
                 if FreeIdxManager::get_map_idx(idx) != 0 {
-                    unsafe { mgr.unchecked_retire(idx); }
+                    unsafe {
+                        mgr.unchecked_retire(idx);
+                    }
                 }
             }
         }
@@ -914,7 +932,9 @@ mod tests {
         // allocate some
         for _ in 0..50 {
             let idx = mgr.get_free_idx();
-            if idx == u32::MAX { break; }
+            if idx == u32::MAX {
+                break;
+            }
             allocated.push(idx);
         }
 
@@ -922,7 +942,9 @@ mod tests {
         for _ in 0..10 {
             for &idx in &allocated {
                 if FreeIdxManager::get_map_idx(idx) == 1 {
-                    unsafe { mgr.unchecked_retire(idx); }
+                    unsafe {
+                        mgr.unchecked_retire(idx);
+                    }
                 }
             }
         }
@@ -930,7 +952,9 @@ mod tests {
         // exhaust map 1 again
         loop {
             let idx = mgr.get_free_idx();
-            if idx == u32::MAX { break; }
+            if idx == u32::MAX {
+                break;
+            }
         }
 
         // Now freelist likely contains stale entries of map 1
@@ -950,7 +974,9 @@ mod tests {
         let mut allocated = Vec::new();
         loop {
             let idx = mgr.get_free_idx();
-            if idx == u32::MAX { break; }
+            if idx == u32::MAX {
+                break;
+            }
             allocated.push(idx);
         }
 
@@ -959,7 +985,9 @@ mod tests {
         for &idx in &allocated {
             let map_idx = FreeIdxManager::get_map_idx(idx);
             if map_idx == 0 {
-                unsafe { mgr.unchecked_retire(idx); }
+                unsafe {
+                    mgr.unchecked_retire(idx);
+                }
             }
         }
 
@@ -1737,7 +1765,10 @@ mod tests {
         assert!(res.is_err());
 
         assert_eq!(mgr.bitmap, bitmap_before, "bitmap mutated on failure");
-        assert_eq!(mgr.free_list, freelist_before, "freelist mutated on failure");
+        assert_eq!(
+            mgr.free_list, freelist_before,
+            "freelist mutated on failure"
+        );
         assert_eq!(mgr.curr_idx, curr_before, "curr_idx mutated on failure");
     }
 
@@ -1831,6 +1862,4 @@ mod tests {
             "rebuild produced capacity but allocator cannot reach it"
         );
     }
-
-    
 }
