@@ -1,1 +1,3 @@
-pub mod object_manager;
+pub mod errors;
+pub mod fixed_slot_manager;
+pub mod objects;
